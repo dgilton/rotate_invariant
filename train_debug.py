@@ -253,10 +253,6 @@ def rotate_fn(images, seed=0, return_np=False, batch_size=32):
     )
         #maxval = 180.00*math.pi/180,
     
-    #FIXME here is only for debugging
-    random_degrees = tf.multiply(
-        tf.constant(180.0/math.pi, dtype=tf.float32), random_angles
-    )
 
     #FIXME debug here
     # remove numpy option and integrate output as tf.tensor
@@ -264,37 +260,64 @@ def rotate_fn(images, seed=0, return_np=False, batch_size=32):
       rotated_images = tf.keras.backend.eval(rotated_tensor_images)
       return rotated_images
     else:
-      return rotated_tensor_images,random_degrees
+      return rotated_tensor_images
 
+def rotate_operation(imgs, angle=1):
+    """angle: Radian.
+        angle = degree * math.pi/180
+    """
+    rimgs = tf.contrib.image.transform(
+    imgs,
+    tf.contrib.image.angles_to_projective_transforms(
+        angle, tf.cast(tf.shape(imgs)[1], tf.float32), 
+        tf.cast(tf.shape(imgs)[2], tf.float32)
+        )
+    )
+    return rimgs
 
 def loss_rotate_fn(imgs, 
                    encoder,
                    batch_size=32,
                    copy_size=4,
-                   c_lambda=1
+                   c_lambda=1,
+                   dangle=2
                    ):
 
     stime = datetime.now()
     loss_rotate_list = []
 
     encoded_imgs = encoder(imgs)
-    for idx in range(int(batch_size/copy_size)):
-      _imgs = encoded_imgs[copy_size*idx:copy_size*(idx+1)]
-      _loss_rotate_list = []
-      for (i,j) in itertools.combinations([i for i in range(copy_size)],2):
-        _loss_rotate_list.append(
-          tf.reduce_mean( tf.square( _imgs[i] - _imgs[j]) )
-        )
-      loss_rotate_list.append(tf.reduce_max(tf.stack(_loss_rotate_list, axis=0)))
+    # orthodox pattern
+    angle_list = [i*math.pi/180 for i in range(0,360,dangle)]
+    for angle in angle_list:
+      rencoded_imgs = rotate_operation(encoded_imgs,angle=angle) # R_theta(x_hat)
+      loss_rotate_list.append(
+        tf.reduce_mean(tf.square(encoded_imgs - rencoded_imgs)) 
+      )
+
+    # ++ previous version for speed up
+    #for idx in range(int(batch_size/copy_size)):
+    #  _imgs = encoded_imgs[copy_size*idx:copy_size*(idx+1)]
+    #  _loss_rotate_list = []
+    #  for (i,j) in itertools.combinations([i for i in range(copy_size)],2):
+    #    _loss_rotate_list.append(
+    #      tf.reduce_mean( tf.square( _imgs[i] - _imgs[j]) )
+    #    )
+    #  loss_rotate_list.append(tf.reduce_max(tf.stack(_loss_rotate_list, axis=0)))
 
     #loss_rotate = tf.reduce_mean(tf.stack(loss_rotate_list, axis=0))
-    loss_rotate = tf.reduce_max(tf.stack(loss_rotate_list, axis=0))
+    #loss_rotate = tf.reduce_max(tf.stack(loss_rotate_list, axis=0))
+    loss_rotate_tf = tf.multiply(
+                          tf.constant(c_lambda ,dtype=tf.float32), 
+                          tf.stack(loss_rotate_list, axis=0)
+    )
 
     etime = datetime.now()
     print(" Loss Rotate {} s".format(etime - stime))
     #del loss_rotate_list, _loss_rotate_list, _imgs
     #return tf.multiply(tf.constant(c_lambda ,dtype=tf.float32), loss_rotate)
-    return loss_rotate
+    #return loss_rotate
+    return loss_rotate_tf
 
 def loss_reconst_fn(imgs,
                     oimgs, 
@@ -306,22 +329,9 @@ def loss_reconst_fn(imgs,
                     ):
 
     stime = datetime.now()
-    def rotate_operation(imgs, angle=1):
-        """angle: Radian.
-            angle = degree * math.pi/180
-        """
-        rimgs = tf.contrib.image.transform(
-        imgs,
-        tf.contrib.image.angles_to_projective_transforms(
-            angle, tf.cast(tf.shape(imgs)[1], tf.float32), 
-            tf.cast(tf.shape(imgs)[2], tf.float32)
-            )
-        )
-        return rimgs
-
     loss_reconst_list = []
-    #angle_list = [i*math.pi/180 for i in range(0,360,dangle)]
-    angle_list = [i*math.pi/180 for i in range(0,180,dangle)]
+    angle_list = [i*math.pi/180 for i in range(0,360,dangle)]
+    #angle_list = [i*math.pi/180 for i in range(0,180,dangle)]
      
     # 08/28 2PM  before modification 
     #encoded_imgs = encoder(oimgs)
@@ -379,10 +389,10 @@ def make_copy_rotate_image(oimgs_tf, batch_size=32, copy_size=4, height=32, widt
   coimgs = tf.concat(img_list, axis=0)
   #crimgs = rotate_fn(coimgs, seed=np.random.randint(0,999), return_np=False)
   #TODO for debugging
-  crimgs, random_degrees = rotate_fn(coimgs, seed=np.random.randint(0,999), return_np=False, batch_size=batch_size)
+  crimgs = rotate_fn(coimgs, seed=np.random.randint(0,999), return_np=False, batch_size=batch_size)
   etime = datetime.now()
   print(" make_copy_rotate {} s".format(etime - stime))
-  return crimgs, coimgs, random_degrees
+  return crimgs, coimgs 
 
 if __name__ == '__main__':
   # time for data preparation
@@ -393,14 +403,10 @@ if __name__ == '__main__':
 
   # set data
   mnist = input_data.read_data_sets(os.path.abspath("./MNIST_data/"), one_hot=False)
-  #targetDigitIndex = np.where( 
-  #    (mnist.train.labels==FLAGS.digit) | 
-  #    (mnist.train.labels== 0 ) |
-  #    (mnist.train.labels== 1 ) |
-  #)
-  #train_images = mnist.train.images[targetDigitIndex]
-  train_images  = mnist.train.images
-  #print( " Target Digit {} | Number of Debug Images {} ".format(FLAGS.digit, len(train_images)) )
+  targetDigitIndex = np.where( mnist.train.labels==FLAGS.digit) 
+  train_images = mnist.train.images[targetDigitIndex]
+  #train_images  = mnist.train.images
+  print( " Target Digit {} | Number of Debug Images {} ".format(FLAGS.digit, len(train_images)) )
 
   # ad-hoc params
   #num_test_images = int(FLAGS.batch_size/FLAGS.copy_size)
@@ -420,6 +426,7 @@ if __name__ == '__main__':
   # TODO Add for debug. Remove finally
   figname   = 'fig_'+FLAGS.expname+bname1+bname2+str(ctime.strftime("%s"))
   ofilename = 'loss_'+FLAGS.expname+bname1+bname2+str(ctime.strftime("%s"))+'.txt'
+  dfilename = 'degree_'+FLAGS.expname+bname1+bname2+str(ctime.strftime("%s"))+'.txt'
 
   # set global time step
   global_step = tf.train.get_or_create_global_step()
@@ -440,7 +447,7 @@ if __name__ == '__main__':
 
   # why get_one_shot_iterator leads OOM error?
   train_iterator = dataset_mapper.make_initializable_iterator()
-  imgs, oimgs, random_degrees  = train_iterator.get_next()
+  imgs, oimgs  = train_iterator.get_next()
 
   # get model
   encoder, decoder = model_fn(nblocks=FLAGS.nblocks)
@@ -469,7 +476,7 @@ if __name__ == '__main__':
   train_ops = tf.train.GradientDescentOptimizer(FLAGS.lr).minimize(
     tf.math.add(
         tf.reduce_min(loss_reconst),
-        tf.multiply(tf.constant(FLAGS.c_lambda ,dtype=tf.float32), loss_rotate)
+        tf.reduce_max(loss_rotate)
     )
   )
 
@@ -477,7 +484,7 @@ if __name__ == '__main__':
   # observe loss values with tensorboard
   with tf.name_scope("summary"):
     tf.summary.scalar("reconst loss", tf.reduce_min(loss_reconst) )
-    tf.summary.scalar("rotate loss", loss_rotate)
+    tf.summary.scalar("rotate loss", tf.reduce_max(loss_rotate) )
     merged = tf.summary.merge_all()
 
   # set-up save models
@@ -512,10 +519,12 @@ if __name__ == '__main__':
 
     # initialize other variables
     num_batches=int(len(train_images)*FLAGS.copy_size)//FLAGS.batch_size
-    #angle_list = [i for i in range(0,360, FLAGS.dangle)]
-    angle_list = [i for i in range(0,180, FLAGS.dangle)]
+    angle_list = [i for i in range(0,360, FLAGS.dangle)]
+    #angle_list = [i for i in range(0,180, FLAGS.dangle)]
     loss_reconst_list = []
     loss_rotate_list = []
+    deg_reconst_list = []
+    deg_rotate_list = []
 
     # Trace and Profiling options
     summary_writer = tf.summary.FileWriter(os.path.join(FLAGS.output_modeldir, 'logs'), sess.graph) 
@@ -534,18 +543,20 @@ if __name__ == '__main__':
 
         if iteration % 100 == 0:
           # set for check loss/iteration
-          _loss_reconst,_loss_rotate, _random_angles = sess.run(
-              [loss_reconst, loss_rotate, random_degrees]
+          _loss_reconst,_loss_rotate = sess.run(
+              [loss_reconst, loss_rotate]
           )
   
           print(
-                 "iteration {:7} Degree at 1st term{:3}  Degree at 2nd term {:10} | loss min reconst {:10}  loss rotate {:10} ".format(
-              iteration, angle_list[np.argmin(_loss_reconst)], np.min(_random_angles),
-              np.min(_loss_reconst),_loss_rotate
+                 "iteration {:7} Theta 1st term {:4}  Theta at 2nd term {:4} | loss reconst {:12}  loss rotate {:12} ".format(
+              iteration, angle_list[np.argmin(_loss_reconst)],angle_list[np.argmax(_loss_rotate)],   
+              math.floor(np.min(_loss_reconst)*(10**6))/10**6 , np.max(_loss_rotate)
             ), flush=True
           )
           loss_reconst_list.append(np.min(_loss_reconst))
-          loss_rotate_list.append(np.min(_loss_rotate))
+          loss_rotate_list.append(np.max(_loss_rotate))
+          deg_reconst_list.append(angle_list[np.argmin(_loss_reconst)])
+          deg_rotate_list.append(angle_list[np.argmax(_loss_rotate)])
           #stop
 
         if iteration % 1000 == 0:
@@ -565,11 +576,11 @@ if __name__ == '__main__':
            )
 
          # correct theta
-         _loss_reconst,_loss_rotate, _random_angles = sess.run(
-             [loss_reconst, loss_rotate, random_degrees]
+         _loss_reconst,_loss_rotate = sess.run(
+             [loss_reconst, loss_rotate]
          )
-         print( "\n Save Model: Correct Theta {:3} and Psi {:10} \n".format(
-              angle_list[np.argmin(_loss_reconst)], np.min(_random_angles)
+         print( "\n Save Model: Correct Theta {:4} and Psi {:4} \n".format(
+              angle_list[np.argmin(_loss_reconst)], angle_list[np.argmax(_loss_rotate)]
             )
          )
          
@@ -578,9 +589,8 @@ if __name__ == '__main__':
     # + Visualization
     #=======================
     with tf.device("/CPU"):
-      encoded = encoder(imgs)
       results, test_images, rtest_images = sess.run(
-        [decoder(encoded), oimgs, imgs]
+        [decoder(encoder(imgs)), oimgs, imgs]
       )
 
       #Comparing original images with reconstructions
@@ -598,8 +608,14 @@ if __name__ == '__main__':
         a[2][idx].set_yticklabels([])
       plt.savefig(FLAGS.figdir+'/'+figname+'.png')
 
+      # loss
       with open(os.path.join(FLAGS.logdir, ofilename), 'w') as f:
         for re, ro in zip(loss_reconst_list, loss_rotate_list):
+          f.write(str(re)+','+str(ro)+'\n')
+
+      # degree
+      with open(os.path.join(FLAGS.logdir, dfilename), 'w') as f:
+        for re, ro in zip(deg_reconst_list, deg_rotate_list):
           f.write(str(re)+','+str(ro)+'\n')
 
   print("### DEBUG NORMAL END ###")
