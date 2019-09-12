@@ -286,14 +286,31 @@ def loss_rotate_fn(imgs,
     stime = datetime.now()
     loss_rotate_list = []
 
-    encoded_imgs = encoder(imgs)
-    # orthodox pattern
+
+    # Debugged orthodox version
     angle_list = [i*math.pi/180 for i in range(0,360,dangle)]
+    rimgs_list = []
     for angle in angle_list:
-      rencoded_imgs = rotate_operation(encoded_imgs,angle=angle) # R_theta(x_hat)
+      rimgs_list.append(rotate_operation(imgs,angle=angle)) # R_theta(x)
+    rimgs = tf.concat(rimgs_list, axis=0)
+    # get encoded  images at once
+    encoded_imgs  = encoder(imgs)
+    encoded_rimgs = encoder(rimgs)
+    for i in range(len(angle_list)):
       loss_rotate_list.append(
-        tf.reduce_mean(tf.square(encoded_imgs - rencoded_imgs)) 
+        tf.reduce_mean(
+          tf.square(encoded_imgs - encoded_rimgs[i*copy_size:(i+1)*copy_size])
+        )
       )
+
+    #encoded_imgs = encoder(imgs)
+    # orthodox pattern
+    #angle_list = [i*math.pi/180 for i in range(0,360,dangle)]
+    #for angle in angle_list:
+    #  rencoded_imgs = rotate_operation(encoded_imgs,angle=angle) # R_theta(x_hat)
+    #  loss_rotate_list.append(
+    #    tf.reduce_mean(tf.square(encoded_imgs - rencoded_imgs)) 
+    #  )
 
     # ++ previous version for speed up
     #for idx in range(int(batch_size/copy_size)):
@@ -335,11 +352,31 @@ def loss_reconst_fn(imgs,
      
     # 08/28 2PM  before modification 
     #encoded_imgs = encoder(oimgs)
-    encoded_imgs = encoder(imgs)
-    reconst_imgs = decoder(encoded_imgs)
+    #encoded_imgs = encoder(imgs)
+    #reconst_imgs = decoder(encoded_imgs)
+
+    # memory intensive code
+    #for angle in angle_list:
+    #  rimgs = rotate_operation(imgs,angle=angle) # R_theta(x)
+    #  encoded_imgs  = encoder(rimgs)
+    #  decoded_rimgs = decoder(encoded_imgs)# f(R_theta(x))
+    #  loss_reconst_list.append(tf.reduce_mean(tf.square(imgs - decoded_rimgs)))
+
+    # Save memory
+    rimgs_list = []
+    # make rotated images at once
     for angle in angle_list:
-      rimgs = rotate_operation(reconst_imgs,angle=angle) # R_theta(x_hat)
-      loss_reconst_list.append(tf.reduce_mean(tf.square(imgs - rimgs)))
+      rimgs_list.append(rotate_operation(imgs,angle=angle)) # R_theta(x)
+    rimgs = tf.concat(rimgs_list, axis=0)
+    # get encoded-decoded images at once
+    encoded_imgs  = encoder(rimgs)
+    decoded_rimgs = decoder(encoded_imgs)# f(R_theta(x))
+    for i in range(len(angle_list)):
+      loss_reconst_list.append(
+        tf.reduce_mean(
+          tf.square(imgs - decoded_rimgs[i*copy_size:(i+1)*copy_size])
+        )
+      )
     loss_reconst_tf = tf.stack(loss_reconst_list, axis=0)
     #loss_reconst = tf.reduce_min(loss_reconst_tf)
     etime = datetime.now()
@@ -531,9 +568,9 @@ if __name__ == '__main__':
     num_batches=int(len(train_images)*FLAGS.copy_size)//FLAGS.batch_size
     angle_list = [i for i in range(0,360, FLAGS.dangle)]
     #angle_list = [i for i in range(0,180, FLAGS.dangle)]
-    #loss_reconst_list = []
+    loss_reconst_list = []
     loss_rotate_list = []
-    #deg_reconst_list = []
+    deg_reconst_list = []
     deg_rotate_list = []
 
     # Trace and Profiling options
@@ -564,6 +601,12 @@ if __name__ == '__main__':
           #       "iteration {:7} Theta 1st term {:4}  Theta at 2nd term {:4} | loss reconst {:12}  loss rotate {:12} ".format(
           #    iteration, angle_list[np.argmin(_loss_reconst)],angle_list[np.argmax(_loss_rotate)],   
           #    math.floor(np.min(_loss_reconst)*(10**6))/10**6 , np.max(_loss_rotate)
+          #  ), flush=True
+          #)
+          #print(
+          #       "iteration {:7} Theta 1st term {:4} | loss reconst {:12} ".format(
+          #    iteration, angle_list[np.argmin(_loss_reconst)],   
+          #    np.min(_loss_reconst)
           #  ), flush=True
           #)
           print(
@@ -598,7 +641,8 @@ if __name__ == '__main__':
          #_loss_reconst,_loss_rotate = sess.run(
          #    [loss_reconst, loss_rotate]
          #)
-         #print( "\n Save Model: Correct Theta {:4} and Psi {:4} \n".format(
+         #print( "\n Save Model Epoch {}: Correct Theta {:4} and Psi {:4} \n".format(
+         #     epoch,
          #     angle_list[np.argmin(_loss_reconst)], angle_list[np.argmax(_loss_rotate)]
          #   )
          #)
@@ -610,6 +654,7 @@ if __name__ == '__main__':
               angle_list[np.argmax(_loss_rotate)],
             )
          )
+              #angle_list[np.argmax(_loss_rotate)],
          
 
     #=======================
@@ -656,3 +701,6 @@ if __name__ == '__main__':
           f.write(str(re)+','+str(ro)+'\n')
 
   print("### DEBUG NORMAL END ###")
+  # FINISH
+  etime = (time.time() -stime)/60.0 # minutes
+  print("   Execution time [minutes]  : %f" % etime, flush=True)
