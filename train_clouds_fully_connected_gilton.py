@@ -89,6 +89,17 @@ def get_args():
     default=3
   )
   p.add_argument(
+      '--global_normalization',
+      action="store_true",
+      help='normalize cloud data if data was not normalized to mean 0 stdv 1',
+      default=True
+  )
+  p.add_argument(
+      '--stats_datadir',
+      type=str,
+      default='./clouds_tfdata/global_mean_std/'
+  )
+  p.add_argument(
     '--save_every',
     type=int,
     default=1
@@ -106,7 +117,7 @@ def get_args():
   p.add_argument(
     '--c_lambda',
     type=float,
-    default=0.1
+    default=0.05
   )
   p.add_argument(
     '--rotation',
@@ -197,16 +208,18 @@ def input_fn(data, batch_size=8, copy_size=4, prefetch=1):
     dataset = dataset.shuffle(1000).repeat().batch(int(batch_size)).prefetch(prefetch)
     return dataset
 
-def input_clouds_fn(filelist,batch_size=8, copy_size=4, prefetch=1, read_threads=4,distribute=(1, 0)):
+
+def input_clouds_fn(filelist, gmean, gstdv, batch_size=32, copy_size=4, prefetch=1, read_threads=4, distribute=(1, 0)):
     """
       INPUT:
         prefetch: tf.int64. How many "minibatch" we asynchronously prepare on CPU ahead of GPU
     """
+
     def parser(ser):
         """
         Decode & Pass datast in tf.record
         *Cuation*
-        floating point: tfrecord data ==> tf.float64 
+        floating point: tfrecord data ==> tf.float64
         """
         features = {
             "shape": tf.FixedLenFeature([3], tf.int64),
@@ -217,27 +230,36 @@ def input_clouds_fn(filelist,batch_size=8, copy_size=4, prefetch=1, read_threads
         decoded = tf.parse_single_example(ser, features)
         patch = tf.reshape(
             tf.decode_raw(decoded["patch"], tf.float64), decoded["shape"]
-            #tf.decode_raw(decoded["patch"], tf.float32), decoded["shape"]
+            # tf.decode_raw(decoded["patch"], tf.float32), decoded["shape"]
         )
         print("shape check in pipeline {}".format(patch.shape), flush=True)
-        #patch = tf.random_crop(patch, shape)
-        #return decoded["filename"], decoded["coordinate"], patch
+        # patch = tf.random_crop(patch, shape)
+        # return decoded["filename"], decoded["coordinate"], patch
 
         # conversion of tensor
         patch = tf.cast(patch, tf.float32)
+        if not gstdv.all() == 0.00:
+            # np to tf
+            gmean_tf = tf.constant(gmean, dtype=tf.float32)
+            gstdv_tf = tf.constant(gstdv, dtype=tf.float32)
+            # avoid 0 div
+            patch -= gmean_tf
+            patch /= gstdv_tf
+            print("\n## Normalization process Done ##\n")
+
         return patch
 
     # check batch/copy ratio
     try:
-      if batch_size % copy_size == 0:
-        print("\n Number of actual original images == {} ".format(int(batch_size)))
+        if batch_size % copy_size == 0:
+            print("\n Number of actual original images == {} ".format(int(batch_size)))
     except:
-      raise ValueError("\n Division of batch size and copy size is not Integer \n")
+        raise ValueError("\n Division of batch size and copy size is not Integer \n")
 
     dataset = (
         tf.data.Dataset.list_files(filelist, shuffle=True)
-        .shard(*distribute)
-        .apply(
+            .shard(*distribute)
+            .apply(
             parallel_interleave(
                 lambda f: tf.data.TFRecordDataset(f).map(parser),
                 cycle_length=read_threads,
@@ -247,6 +269,7 @@ def input_clouds_fn(filelist,batch_size=8, copy_size=4, prefetch=1, read_threads
     )
     dataset = dataset.shuffle(1000).repeat().batch(int(batch_size)).prefetch(prefetch)
     return dataset
+
 
 def make_copy_rotate_image(oimgs_tf, batch_size=32, copy_size=4, height=128, width=128):
   """
@@ -312,15 +335,25 @@ if __name__ == '__main__':
   ofilename = 'loss_'+FLAGS.expname+bname1+bname2+str(ctime.strftime("%s"))+'.txt'
   dfilename = 'degree_'+FLAGS.expname+bname1+bname2+str(ctime.strftime("%s"))+'.txt'
 
+  # print()
+  if FLAGS.global_normalization:
+      global_mean = np.load(glob.glob(FLAGS.stats_datadir + '/*_gmean.npy')[0])
+      global_stdv = np.load(glob.glob(FLAGS.stats_datadir + '/*_gstdv.npy')[0])
+  else:
+      global_mean = np.zeros((6))
+      global_stdv = np.ones((6))
+
   # set global time step
   global_step = tf.train.get_or_create_global_step()
 
   with tf.device('/CPU'):
     # get dataset and one-shot-iterator
-    dataset = input_clouds_fn(train_images_list, 
-                              batch_size=FLAGS.batch_size, 
+    dataset = input_clouds_fn(train_images_list,
+                              global_mean,
+                              global_stdv,
+                              batch_size=FLAGS.batch_size,
                               copy_size=FLAGS.copy_size
-    )
+                              )
     # apply preprocessing  
     dataset_mapper = dataset.map(lambda x: make_copy_rotate_image(
             x,batch_size=FLAGS.batch_size,copy_size=FLAGS.copy_size,
@@ -395,9 +428,9 @@ if __name__ == '__main__':
 
   # gpu config 
   config = tf.ConfigProto(
-    # gpu_options=tf.GPUOptions(
-    #     allow_growth=True
-    # ),
+    # intra_op_parallelism_threads=NUM_THREADS,
+    # inter_op_parallelism_threads=NUM_THREADS,
+    # allow_soft_placement=True,
     log_device_placement=False
   )
 
@@ -433,7 +466,6 @@ if __name__ == '__main__':
     #====================================================================
     # Training
     #====================================================================
-    print('hello?')
     stime = time.time()
     for epoch in range(FLAGS.num_epoch):
       for iteration in range(num_batches):

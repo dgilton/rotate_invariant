@@ -59,7 +59,7 @@ def channel_wise_fc_layer(input, name):  # bottom: (7x7x512)
     with tf.variable_scope(name):
         W = tf.get_variable(
             "W",
-            shape=[n_feat_map, width * height, width * height],  # (512,49,49)
+            shape=[n_feat_map, width * height, width * height],
             initializer=tf.random_normal_initializer(0., 0.05))
         output = tf.matmul(input_transpose, W)
 
